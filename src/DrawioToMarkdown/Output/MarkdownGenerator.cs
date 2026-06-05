@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using DrawioToMarkdown.Graph;
 
 namespace DrawioToMarkdown.Output;
@@ -35,7 +36,8 @@ public sealed class MarkdownGenerator : IMarkdownGenerator
 
                 foreach (var label in labels)
                 {
-                    sb.AppendLine($"- {label}");
+                    var anchor = ToAnchor(label);
+                    sb.AppendLine($"- [{label}](#{anchor})");
                 }
             }
             else
@@ -47,5 +49,17 @@ public sealed class MarkdownGenerator : IMarkdownGenerator
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Converts a heading text to a GitHub/CommonMark-style anchor slug.
+    /// Lowercase, spaces become hyphens, non-alphanumeric/hyphen characters removed.
+    /// </summary>
+    private static string ToAnchor(string heading)
+    {
+        var lower = heading.ToLowerInvariant();
+        var slug = Regex.Replace(lower, @"[^\w\s-]", string.Empty);
+        slug = Regex.Replace(slug, @"\s+", "-");
+        return slug.Trim('-');
     }
 }

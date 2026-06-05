@@ -44,7 +44,7 @@ public class MarkdownGeneratorTests
         var result = _sut.Generate(graph);
 
         Assert.Contains("### Depends on", result);
-        Assert.Contains("- Task A", result);
+        Assert.Contains("- [Task A](#task-a)", result);
     }
 
     [Fact]
