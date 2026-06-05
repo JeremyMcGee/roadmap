@@ -47,6 +47,13 @@ public sealed class DrawioParser : IDrawioParser
             {
                 var rawLabel = cell.Attribute("value")?.Value ?? string.Empty;
                 var label = StripHtml(rawLabel);
+
+                // Skip activities with blank labels
+                if (string.IsNullOrWhiteSpace(label))
+                {
+                    continue;
+                }
+
                 nodes.Add(new ActivityNode(id, label));
             }
             else if (isEdge)

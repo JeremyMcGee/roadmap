@@ -91,6 +91,30 @@ public class DrawioParserTests
     }
 
     [Fact]
+    public void Parse_BlankLabels_SkipsActivities()
+    {
+        // Arrange — activities with empty, whitespace-only, or HTML-only labels should be excluded
+        var xml = """
+            <mxfile><diagram name="Page-1"><mxGraphModel><root>
+              <mxCell id="0" />
+              <mxCell id="1" parent="0" />
+              <mxCell id="2" value="Real Task" vertex="1" parent="1" />
+              <mxCell id="3" value="" vertex="1" parent="1" />
+              <mxCell id="4" value="   " vertex="1" parent="1" />
+              <mxCell id="5" value="&lt;br&gt;" vertex="1" parent="1" />
+              <mxCell id="6" value="&lt;div&gt;&lt;/div&gt;" vertex="1" parent="1" />
+            </root></mxGraphModel></diagram></mxfile>
+            """;
+
+        // Act
+        var result = _parser.Parse(xml);
+
+        // Assert — only the node with an actual label is kept
+        Assert.Single(result.Nodes);
+        Assert.Contains(result.Nodes, n => n.Id == "2" && n.Label == "Real Task");
+    }
+
+    [Fact]
     public void Parse_EdgeWithoutSourceOrTarget_SkipsEdge()
     {
         // Arrange — edges missing source and/or target attributes should be skipped
