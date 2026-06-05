@@ -68,6 +68,29 @@ public class DrawioParserTests
     }
 
     [Fact]
+    public void Parse_HtmlFormattedLabels_StripsHtmlTags()
+    {
+        // Arrange — draw.io often stores labels with HTML formatting
+        var xml = """
+            <mxfile><diagram name="Page-1"><mxGraphModel><root>
+              <mxCell id="0" />
+              <mxCell id="1" parent="0" />
+              <mxCell id="2" value="&lt;b&gt;Design API&lt;/b&gt;" vertex="1" parent="1" />
+              <mxCell id="3" value="&lt;div&gt;&lt;span style=&quot;font-size: 12px;&quot;&gt;Implement Backend&lt;/span&gt;&lt;/div&gt;" vertex="1" parent="1" />
+              <mxCell id="4" value="Write &amp;amp; Test" vertex="1" parent="1" />
+            </root></mxGraphModel></diagram></mxfile>
+            """;
+
+        // Act
+        var result = _parser.Parse(xml);
+
+        // Assert — HTML tags stripped, entities decoded
+        Assert.Contains(result.Nodes, n => n.Id == "2" && n.Label == "Design API");
+        Assert.Contains(result.Nodes, n => n.Id == "3" && n.Label == "Implement Backend");
+        Assert.Contains(result.Nodes, n => n.Id == "4" && n.Label == "Write & Test");
+    }
+
+    [Fact]
     public void Parse_EdgeWithoutSourceOrTarget_SkipsEdge()
     {
         // Arrange — edges missing source and/or target attributes should be skipped

@@ -1,3 +1,5 @@
+using System.Net;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using DrawioToMarkdown.Graph;
 
@@ -43,7 +45,8 @@ public sealed class DrawioParser : IDrawioParser
 
             if (isVertex)
             {
-                var label = cell.Attribute("value")?.Value ?? string.Empty;
+                var rawLabel = cell.Attribute("value")?.Value ?? string.Empty;
+                var label = StripHtml(rawLabel);
                 nodes.Add(new ActivityNode(id, label));
             }
             else if (isEdge)
@@ -59,5 +62,24 @@ public sealed class DrawioParser : IDrawioParser
         }
 
         return new ParsedDiagram(nodes, edges);
+    }
+
+    /// <summary>
+    /// Strips HTML tags from a string and decodes HTML entities.
+    /// Draw.io often stores labels with HTML formatting (e.g., &lt;b&gt;Task&lt;/b&gt;).
+    /// </summary>
+    private static string StripHtml(string input)
+    {
+        if (string.IsNullOrEmpty(input))
+            return input;
+
+        // Remove HTML tags
+        var withoutTags = Regex.Replace(input, "<[^>]+>", string.Empty);
+
+        // Decode HTML entities (&amp; → &, &lt; → <, etc.)
+        var decoded = WebUtility.HtmlDecode(withoutTags);
+
+        // Collapse whitespace and trim
+        return Regex.Replace(decoded, @"\s+", " ").Trim();
     }
 }
