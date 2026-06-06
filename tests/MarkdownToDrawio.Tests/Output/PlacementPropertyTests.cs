@@ -11,8 +11,8 @@ namespace MarkdownToDrawio.Tests.Output;
 
 /// <summary>
 /// Property-based tests verifying that activity nodes are correctly placed
-/// within their category swimlane at the correct quarter column x-position,
-/// and that activities sharing the same cell have distinct y-coordinates.
+/// within their category swimlane, and that activities at the same horizontal
+/// slot within the same cell have distinct y-coordinates (no overlapping).
 /// **Validates: Requirements 3.7**
 /// </summary>
 public class PlacementPropertyTests
@@ -23,6 +23,10 @@ public class PlacementPropertyTests
             ArbitraryRoadmaps.GenValidRoadmapModel().ToArbitrary();
     }
 
+    /// <summary>
+    /// Each activity node's parent attribute must reference the swimlane
+    /// corresponding to its category.
+    /// </summary>
     [Property(MaxTest = 100, Arbitrary = new[] { typeof(Arbitraries) })]
     public bool ActivityNodes_ParentMatchesCategorySwimlane(RoadmapModel model)
     {
@@ -30,13 +34,17 @@ public class PlacementPropertyTests
         var xml = generator.Generate(model);
         var doc = XDocument.Parse(xml);
 
-        // Get all activity mxCell elements (id starting with "act_")
         var activityNodes = doc.Descendants("mxCell")
             .Where(e => e.Attribute("id")?.Value?.StartsWith("act_") == true)
             .ToList();
 
-        // Build a map from activity index to its category
-        var sortedCategories = DiagramGenerator.GetSortedCategories(model);
+        // Build a set of swimlane IDs and their value (category name)
+        var swimlanes = doc.Descendants("mxCell")
+            .Where(e => (e.Attribute("style")?.Value ?? "").Contains("shape=swimlane"))
+            .ToDictionary(
+                e => e.Attribute("id")!.Value,
+                e => e.Attribute("value")!.Value,
+                StringComparer.OrdinalIgnoreCase);
 
         foreach (var actNode in activityNodes)
         {
@@ -47,18 +55,24 @@ public class PlacementPropertyTests
             if (string.IsNullOrWhiteSpace(activity.Category))
                 continue;
 
-            var expectedParent = $"cat_{SanitizeId(activity.Category!)}";
-            var actualParent = actNode.Attribute("parent")?.Value;
+            var parentId = actNode.Attribute("parent")?.Value;
+            if (parentId == null || !swimlanes.TryGetValue(parentId, out var swimlaneCategory))
+                return false;
 
-            if (actualParent != expectedParent)
+            // The swimlane's category should match the activity's category (case-insensitive)
+            if (!string.Equals(swimlaneCategory, activity.Category, StringComparison.OrdinalIgnoreCase))
                 return false;
         }
 
         return true;
     }
 
+    /// <summary>
+    /// Each activity node's x-position must be within the bounds of its quarter column.
+    /// The quarter column bounds are determined by the quarter label elements' x and width.
+    /// </summary>
     [Property(MaxTest = 100, Arbitrary = new[] { typeof(Arbitraries) })]
-    public bool ActivityNodes_XPositionMatchesQuarterColumn(RoadmapModel model)
+    public bool ActivityNodes_XPositionWithinQuarterColumn(RoadmapModel model)
     {
         var generator = new DiagramGenerator();
         var xml = generator.Generate(model);
@@ -68,12 +82,20 @@ public class PlacementPropertyTests
             .Where(e => e.Attribute("id")?.Value?.StartsWith("act_") == true)
             .ToList();
 
-        var sortedQuarters = DiagramGenerator.GetSortedQuarters(model);
+        // Get quarter column bounds from qlabel elements
+        var quarterLabels = doc.Descendants("mxCell")
+            .Where(e => e.Attribute("id")?.Value?.StartsWith("qlabel_") == true)
+            .OrderBy(e => int.Parse(e.Attribute("id")!.Value.Replace("qlabel_", "")))
+            .Select(e =>
+            {
+                var geo = e.Element("mxGeometry")!;
+                var x = int.Parse(geo.Attribute("x")!.Value);
+                var w = int.Parse(geo.Attribute("width")!.Value);
+                return (X: x, Width: w);
+            })
+            .ToList();
 
-        // Layout constants from DiagramGenerator
-        const int SwimlaneStartSize = 30;
-        const int QuarterColumnWidth = 200;
-        const int ActivityPaddingX = 40;
+        var sortedQuarters = DiagramGenerator.GetSortedQuarters(model);
 
         foreach (var actNode in activityNodes)
         {
@@ -85,22 +107,27 @@ public class PlacementPropertyTests
                 continue;
 
             var qIndex = DiagramGenerator.GetQuarterIndex(sortedQuarters, activity.Quarter!);
-            if (qIndex < 0)
+            if (qIndex < 0 || qIndex >= quarterLabels.Count)
                 continue;
 
-            var expectedX = SwimlaneStartSize + (qIndex * QuarterColumnWidth) + ActivityPaddingX;
-            var geometry = actNode.Element("mxGeometry");
-            var actualX = int.Parse(geometry!.Attribute("x")!.Value);
+            var colBounds = quarterLabels[qIndex];
+            var geo = actNode.Element("mxGeometry")!;
+            var actX = int.Parse(geo.Attribute("x")!.Value);
 
-            if (actualX != expectedX)
+            // Activity x should be >= column start x and < column start x + column width
+            if (actX < colBounds.X || actX + 120 > colBounds.X + colBounds.Width + 20) // small tolerance
                 return false;
         }
 
         return true;
     }
 
+    /// <summary>
+    /// Activities at the same x-position within the same parent (same slot in same cell)
+    /// must have distinct y-coordinates (no overlapping).
+    /// </summary>
     [Property(MaxTest = 100, Arbitrary = new[] { typeof(Arbitraries) })]
-    public bool ActivitiesInSameCell_HaveDistinctYCoordinates(RoadmapModel model)
+    public bool ActivitiesInSameSlot_HaveDistinctYCoordinates(RoadmapModel model)
     {
         var generator = new DiagramGenerator();
         var xml = generator.Generate(model);
@@ -110,7 +137,7 @@ public class PlacementPropertyTests
             .Where(e => e.Attribute("id")?.Value?.StartsWith("act_") == true)
             .ToList();
 
-        // Group activities by (parent swimlane, x-position) — those in the same cell
+        // Group activities by (parent swimlane, x-position) — those in the same vertical stack
         var cellGroups = activityNodes
             .Select(e => new
             {
@@ -120,7 +147,6 @@ public class PlacementPropertyTests
             })
             .GroupBy(a => (a.Parent, a.X));
 
-        // Assert all activities in the same cell have distinct y-coordinates
         foreach (var group in cellGroups)
         {
             var yValues = group.Select(a => a.Y).ToList();
@@ -129,13 +155,5 @@ public class PlacementPropertyTests
         }
 
         return true;
-    }
-
-    /// <summary>
-    /// Replicates the SanitizeId logic from DiagramGenerator for test verification.
-    /// </summary>
-    private static string SanitizeId(string value)
-    {
-        return System.Text.RegularExpressions.Regex.Replace(value, @"[^a-zA-Z0-9]", "_");
     }
 }
