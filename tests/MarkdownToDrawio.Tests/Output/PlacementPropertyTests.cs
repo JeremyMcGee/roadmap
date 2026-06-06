@@ -24,11 +24,11 @@ public class PlacementPropertyTests
     }
 
     /// <summary>
-    /// Each activity node's parent attribute must reference the swimlane
-    /// corresponding to its category.
+    /// Each activity node's y-position must fall within the vertical bounds
+    /// of the swimlane corresponding to its category.
     /// </summary>
     [Property(MaxTest = 100, Arbitrary = new[] { typeof(Arbitraries) })]
-    public bool ActivityNodes_ParentMatchesCategorySwimlane(RoadmapModel model)
+    public bool ActivityNodes_YPositionWithinCategorySwimlane(RoadmapModel model)
     {
         var generator = new DiagramGenerator();
         var xml = generator.Generate(model);
@@ -38,13 +38,18 @@ public class PlacementPropertyTests
             .Where(e => e.Attribute("id")?.Value?.StartsWith("act_") == true)
             .ToList();
 
-        // Build a set of swimlane IDs and their value (category name)
+        // Build swimlane bounds: category name → (yStart, yEnd)
         var swimlanes = doc.Descendants("mxCell")
             .Where(e => (e.Attribute("style")?.Value ?? "").Contains("shape=swimlane"))
-            .ToDictionary(
-                e => e.Attribute("id")!.Value,
-                e => e.Attribute("value")!.Value,
-                StringComparer.OrdinalIgnoreCase);
+            .Select(e =>
+            {
+                var geo = e.Element("mxGeometry")!;
+                var y = int.Parse(geo.Attribute("y")!.Value);
+                var h = int.Parse(geo.Attribute("height")!.Value);
+                var cat = e.Attribute("value")!.Value;
+                return (Category: cat, YStart: y, YEnd: y + h);
+            })
+            .ToDictionary(s => s.Category, s => s, StringComparer.OrdinalIgnoreCase);
 
         foreach (var actNode in activityNodes)
         {
@@ -55,12 +60,15 @@ public class PlacementPropertyTests
             if (string.IsNullOrWhiteSpace(activity.Category))
                 continue;
 
-            var parentId = actNode.Attribute("parent")?.Value;
-            if (parentId == null || !swimlanes.TryGetValue(parentId, out var swimlaneCategory))
+            if (!swimlanes.TryGetValue(activity.Category!, out var bounds))
                 return false;
 
-            // The swimlane's category should match the activity's category (case-insensitive)
-            if (!string.Equals(swimlaneCategory, activity.Category, StringComparison.OrdinalIgnoreCase))
+            var geo = actNode.Element("mxGeometry")!;
+            var actY = int.Parse(geo.Attribute("y")!.Value);
+            var actH = int.Parse(geo.Attribute("height")!.Value);
+
+            // Activity must be within the swimlane's vertical bounds
+            if (actY < bounds.YStart || actY + actH > bounds.YEnd)
                 return false;
         }
 

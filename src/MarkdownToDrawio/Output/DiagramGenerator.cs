@@ -30,15 +30,15 @@ public class DiagramGenerator : IDiagramGenerator
 
     // Layout constants
     private const int SwimlaneStartSize = 30;
-    private const int MinQuarterColumnWidth = 200;
+    private const int MinQuarterColumnWidth = 250;
     private const int MinSwimlaneHeight = 150;
     private const int QuarterHeaderHeight = 40;
     private const int ActivityWidth = 120;
     private const int ActivityHeight = 40;
-    private const int ActivityPaddingX = 20;
-    private const int ActivityPaddingY = 20;
-    private const int ActivityStackGap = 10;
-    private const int ActivityHorizontalGap = 20;
+    private const int ActivityPaddingX = 40;
+    private const int ActivityPaddingY = 50;
+    private const int ActivityStackGap = 50;
+    private const int ActivityHorizontalGap = 60;
 
     /// <summary>
     /// Generates Draw.IO-compatible XML from a validated RoadmapModel.
@@ -93,12 +93,13 @@ public class DiagramGenerator : IDiagramGenerator
 
         // Generate activity nodes with side-by-side placement for same-quarter deps
         var activityIdMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var activityElements = GenerateActivityNodes(model, sortedQuarters, sortedCategories, columnSlots, columnXOffsets, activityIdMap);
+        var activityPositions = new Dictionary<string, (int x, int y, int w, int h)>();
+        var activityElements = GenerateActivityNodes(model, sortedQuarters, sortedCategories, columnSlots, columnXOffsets, swimlaneHeights, activityIdMap, activityPositions);
         foreach (var el in activityElements)
             root.Add(el);
 
-        // Generate dependency edges
-        var edgeElements = GenerateEdges(model, activityIdMap, sortedQuarters);
+        // Generate dependency edges with obstacle-aware waypoint routing
+        var edgeElements = GenerateEdges(model, activityIdMap, sortedQuarters, activityPositions);
         foreach (var el in edgeElements)
             root.Add(el);
 
@@ -567,58 +568,148 @@ public class DiagramGenerator : IDiagramGenerator
         List<string> sortedCategories,
         Dictionary<string, int> slotMap,
         List<int> columnXOffsets,
-        Dictionary<string, string> activityIdMap)
+        Dictionary<int, int> swimlaneHeights,
+        Dictionary<string, string> activityIdMap,
+        Dictionary<string, (int x, int y, int w, int h)> activityPositions)
     {
         var elements = new List<XElement>();
 
-        // Track vertical stacking per (catIdx, qIdx, slot)
-        var verticalStack = new Dictionary<(int catIdx, int qIdx, int slot), int>();
+        // Compute absolute y-offset for each category swimlane
+        var categoryYOffsets = new Dictionary<int, int>();
+        int yAccum = QuarterHeaderHeight;
+        for (int i = 0; i < sortedCategories.Count; i++)
+        {
+            categoryYOffsets[i] = yAccum;
+            yAccum += swimlaneHeights.GetValueOrDefault(i, MinSwimlaneHeight);
+        }
 
+        // Build lookup: label → catIndex
+        var labelToCatIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var act in model.Activities)
+        {
+            if (!string.IsNullOrWhiteSpace(act.Category))
+            {
+                int catIdx = GetCategoryIndex(sortedCategories, act.Category!);
+                if (catIdx >= 0) labelToCatIndex[act.Label] = catIdx;
+            }
+        }
+
+        // Group activities by (catIdx, qIdx, slot) for vertical ordering
+        var cellActivities = new Dictionary<(int catIdx, int qIdx, int slot), List<int>>();
         for (int actIdx = 0; actIdx < model.Activities.Count; actIdx++)
         {
             var activity = model.Activities[actIdx];
             if (string.IsNullOrWhiteSpace(activity.Quarter) || string.IsNullOrWhiteSpace(activity.Category))
                 continue;
-
             int catIndex = GetCategoryIndex(sortedCategories, activity.Category!);
             int qIndex = GetQuarterIndex(sortedQuarters, activity.Quarter!);
             if (catIndex < 0 || qIndex < 0) continue;
-
             int slot = slotMap.GetValueOrDefault(activity.Label, 0);
-            var stackKey = (catIndex, qIndex, slot);
-            int stackCount = verticalStack.GetValueOrDefault(stackKey, 0);
+            var key = (catIndex, qIndex, slot);
+            if (!cellActivities.ContainsKey(key))
+                cellActivities[key] = new List<int>();
+            cellActivities[key].Add(actIdx);
+        }
 
-            // X position: column offset + padding + slot * (activityWidth + gap)
-            int xInSwimlane = columnXOffsets[qIndex] + ActivityPaddingX + (slot * (ActivityWidth + ActivityHorizontalGap));
-            int yInSwimlane = ActivityPaddingY + (stackCount * (ActivityHeight + ActivityStackGap));
+        // Sort activities within each cell by "gravity" — activities with edges to
+        // swimlanes above should be placed higher (lower y), activities with edges
+        // to swimlanes below should be placed lower (higher y).
+        foreach (var (key, indices) in cellActivities)
+        {
+            var thisCatIdx = key.catIdx;
 
-            string actId = $"act_{actIdx}";
-            activityIdMap[activity.Label] = actId;
+            indices.Sort((a, b) =>
+            {
+                var actA = model.Activities[a];
+                var actB = model.Activities[b];
+                float gravityA = ComputeGravity(actA, thisCatIdx, labelToCatIndex, model);
+                float gravityB = ComputeGravity(actB, thisCatIdx, labelToCatIndex, model);
+                return gravityA.CompareTo(gravityB);
+            });
+        }
 
-            var parentId = $"cat_{SanitizeId(sortedCategories[catIndex])}";
+        // Now place activities using the sorted order
+        foreach (var (key, indices) in cellActivities)
+        {
+            var (catIndex, qIndex, slot) = key;
+            for (int stackPos = 0; stackPos < indices.Count; stackPos++)
+            {
+                int actIdx = indices[stackPos];
+                var activity = model.Activities[actIdx];
 
-            var node = new XElement("mxCell",
-                new XAttribute("id", actId),
-                new XAttribute("value", activity.Label),
-                new XAttribute("style", "rounded=1;whiteSpace=wrap;html=1;"),
-                new XAttribute("vertex", "1"),
-                new XAttribute("parent", parentId),
-                new XElement("mxGeometry",
-                    new XAttribute("x", xInSwimlane),
-                    new XAttribute("y", yInSwimlane),
-                    new XAttribute("width", ActivityWidth),
-                    new XAttribute("height", ActivityHeight),
-                    new XAttribute("as", "geometry"))
-            );
+                int xAbsolute = columnXOffsets[qIndex] + ActivityPaddingX + (slot * (ActivityWidth + ActivityHorizontalGap));
+                int yAbsolute = categoryYOffsets[catIndex] + ActivityPaddingY + (stackPos * (ActivityHeight + ActivityStackGap));
 
-            elements.Add(node);
-            verticalStack[stackKey] = stackCount + 1;
+                string actId = $"act_{actIdx}";
+                activityIdMap[activity.Label] = actId;
+                activityPositions[actId] = (xAbsolute, yAbsolute, ActivityWidth, ActivityHeight);
+
+                var node = new XElement("mxCell",
+                    new XAttribute("id", actId),
+                    new XAttribute("value", activity.Label),
+                    new XAttribute("style", "rounded=1;whiteSpace=wrap;html=1;"),
+                    new XAttribute("vertex", "1"),
+                    new XAttribute("parent", "1"),
+                    new XElement("mxGeometry",
+                        new XAttribute("x", xAbsolute),
+                        new XAttribute("y", yAbsolute),
+                        new XAttribute("width", ActivityWidth),
+                        new XAttribute("height", ActivityHeight),
+                        new XAttribute("as", "geometry"))
+                );
+
+                elements.Add(node);
+            }
         }
 
         return elements;
     }
 
-    private static List<XElement> GenerateEdges(RoadmapModel model, Dictionary<string, string> activityIdMap, List<string> sortedQuarters)
+    /// <summary>
+    /// Computes a "gravity" score for an activity within its swimlane.
+    /// Negative = edges pull it toward the top (connected to swimlanes above).
+    /// Positive = edges pull it toward the bottom (connected to swimlanes below).
+    /// Zero = no cross-swimlane connections or balanced.
+    /// This sorts activities so that those with connections above sit higher in the cell,
+    /// reducing the chance that edges to other swimlanes pass through sibling boxes.
+    /// </summary>
+    private static float ComputeGravity(
+        Activity activity,
+        int thisCatIdx,
+        Dictionary<string, int> labelToCatIndex,
+        RoadmapModel model)
+    {
+        float gravity = 0;
+
+        // Outgoing: this activity's dependencies (antecedents)
+        foreach (var dep in activity.DependencyLabels)
+        {
+            if (labelToCatIndex.TryGetValue(dep, out int depCat) && depCat != thisCatIdx)
+            {
+                gravity += (depCat - thisCatIdx); // negative if above, positive if below
+            }
+        }
+
+        // Incoming: other activities that depend on this one
+        foreach (var other in model.Activities)
+        {
+            if (other.DependencyLabels.Contains(activity.Label, StringComparer.OrdinalIgnoreCase))
+            {
+                if (labelToCatIndex.TryGetValue(other.Label, out int otherCat) && otherCat != thisCatIdx)
+                {
+                    gravity += (otherCat - thisCatIdx);
+                }
+            }
+        }
+
+        return gravity;
+    }
+
+    private static List<XElement> GenerateEdges(
+        RoadmapModel model,
+        Dictionary<string, string> activityIdMap,
+        List<string> sortedQuarters,
+        Dictionary<string, (int x, int y, int w, int h)> activityPositions)
     {
         var elements = new List<XElement>();
         int edgeIdx = 0;
@@ -633,6 +724,17 @@ public class DiagramGenerator : IDiagramGenerator
                     labelToQuarterIndex[act.Label] = qIdx;
             }
         }
+
+        // Collect all obstacle rectangles (with margin)
+        const int ObstacleMargin = 10;
+        var obstacles = activityPositions.ToDictionary(
+            kvp => kvp.Key,
+            kvp => (
+                x: kvp.Value.x - ObstacleMargin,
+                y: kvp.Value.y - ObstacleMargin,
+                w: kvp.Value.w + ObstacleMargin * 2,
+                h: kvp.Value.h + ObstacleMargin * 2
+            ));
 
         foreach (var activity in model.Activities)
         {
@@ -653,8 +755,27 @@ public class DiagramGenerator : IDiagramGenerator
                 }
 
                 var style = isBackward
-                    ? "edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#FF0000;"
-                    : "edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;";
+                    ? "edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;jumpStyle=arc;jumpSize=10;strokeColor=#FF0000;"
+                    : "edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;jumpStyle=arc;jumpSize=10;";
+
+                // Compute waypoints to route around obstacles
+                var waypoints = ComputeWaypoints(sourceId, targetId, activityPositions, obstacles);
+
+                var geometry = new XElement("mxGeometry",
+                    new XAttribute("relative", "1"),
+                    new XAttribute("as", "geometry"));
+
+                if (waypoints.Count > 0)
+                {
+                    var pointsArray = new XElement("Array", new XAttribute("as", "points"));
+                    foreach (var (wx, wy) in waypoints)
+                    {
+                        pointsArray.Add(new XElement("mxPoint",
+                            new XAttribute("x", wx),
+                            new XAttribute("y", wy)));
+                    }
+                    geometry.Add(pointsArray);
+                }
 
                 var edge = new XElement("mxCell",
                     new XAttribute("id", $"edge_{edgeIdx}"),
@@ -664,9 +785,7 @@ public class DiagramGenerator : IDiagramGenerator
                     new XAttribute("source", sourceId),
                     new XAttribute("target", targetId),
                     new XAttribute("parent", "1"),
-                    new XElement("mxGeometry",
-                        new XAttribute("relative", "1"),
-                        new XAttribute("as", "geometry"))
+                    geometry
                 );
 
                 elements.Add(edge);
@@ -675,6 +794,141 @@ public class DiagramGenerator : IDiagramGenerator
         }
 
         return elements;
+    }
+
+    /// <summary>
+    /// Computes waypoints to route an orthogonal edge from source to target
+    /// while avoiding obstacle rectangles (other activity boxes).
+    /// Returns a list of intermediate (x, y) points the edge should pass through.
+    /// </summary>
+    private static List<(int x, int y)> ComputeWaypoints(
+        string sourceId,
+        string targetId,
+        Dictionary<string, (int x, int y, int w, int h)> positions,
+        Dictionary<string, (int x, int y, int w, int h)> obstacles)
+    {
+        var waypoints = new List<(int x, int y)>();
+
+        if (!positions.TryGetValue(sourceId, out var srcPos) ||
+            !positions.TryGetValue(targetId, out var tgtPos))
+            return waypoints;
+
+        // Source exits from the right-center, target enters from the left-center
+        int srcExitX = srcPos.x + srcPos.w;
+        int srcExitY = srcPos.y + srcPos.h / 2;
+        int tgtEntryX = tgtPos.x;
+        int tgtEntryY = tgtPos.y + tgtPos.h / 2;
+
+        // For a simple orthogonal route: go right from source, then vertical, then right to target
+        // Check if the straight horizontal/vertical segments would intersect any obstacle
+
+        // Collect obstacles that are NOT the source or target
+        var relevantObstacles = obstacles
+            .Where(kvp => kvp.Key != sourceId && kvp.Key != targetId)
+            .Select(kvp => kvp.Value)
+            .ToList();
+
+        if (relevantObstacles.Count == 0)
+            return waypoints; // No obstacles, let Draw.io handle it
+
+        // Determine routing direction
+        bool goingRight = tgtEntryX > srcExitX;
+        bool goingDown = tgtEntryY > srcExitY;
+
+        if (srcExitY == tgtEntryY)
+        {
+            // Same horizontal level — check for obstacles in the horizontal path
+            var blocked = relevantObstacles.Any(obs =>
+                HSegmentIntersectsRect(srcExitX, tgtEntryX, srcExitY, obs));
+
+            if (blocked)
+            {
+                // Route above or below the obstacle
+                int midX = (srcExitX + tgtEntryX) / 2;
+
+                // Find the obstacle blocking us
+                var blockingObs = relevantObstacles
+                    .Where(obs => HSegmentIntersectsRect(srcExitX, tgtEntryX, srcExitY, obs))
+                    .ToList();
+
+                // Route above or below — pick whichever is shorter
+                int topRoute = blockingObs.Min(obs => obs.y) - 10;
+                int bottomRoute = blockingObs.Max(obs => obs.y + obs.h) + 10;
+
+                int routeY = (Math.Abs(srcExitY - topRoute) <= Math.Abs(srcExitY - bottomRoute))
+                    ? topRoute : bottomRoute;
+
+                waypoints.Add((midX, srcExitY));
+                waypoints.Add((midX, routeY));
+                waypoints.Add((midX + (tgtEntryX - srcExitX) / 2, routeY));
+                waypoints.Add((midX + (tgtEntryX - srcExitX) / 2, tgtEntryY));
+            }
+        }
+        else
+        {
+            // Different vertical levels — standard orthogonal route is:
+            // Exit right → go to midX → turn vertical → go to tgtEntryY → turn right to target
+            int midX = (srcExitX + tgtEntryX) / 2;
+
+            // Check if the vertical segment at midX intersects any obstacle
+            var verticalBlocked = relevantObstacles.Any(obs =>
+                VSegmentIntersectsRect(midX, srcExitY, tgtEntryY, obs));
+
+            if (verticalBlocked)
+            {
+                // Find a clear x-position for the vertical segment
+                // Try routing through the gap between source column and target column
+                var blockingObs = relevantObstacles
+                    .Where(obs => VSegmentIntersectsRect(midX, srcExitY, tgtEntryY, obs))
+                    .ToList();
+
+                // Try shifting the vertical segment to the left of the blocking obstacles
+                int clearX = blockingObs.Min(obs => obs.x) - 15;
+                if (clearX <= srcExitX)
+                {
+                    // Or try to the right of them
+                    clearX = blockingObs.Max(obs => obs.x + obs.w) + 15;
+                }
+
+                waypoints.Add((clearX, srcExitY));
+                waypoints.Add((clearX, tgtEntryY));
+            }
+            // If not blocked, Draw.io's orthogonal router handles it fine with no waypoints
+        }
+
+        return waypoints;
+    }
+
+    /// <summary>
+    /// Checks if a horizontal line segment from x1 to x2 at height y intersects a rectangle.
+    /// </summary>
+    private static bool HSegmentIntersectsRect(int x1, int x2, int y, (int x, int y, int w, int h) rect)
+    {
+        int minX = Math.Min(x1, x2);
+        int maxX = Math.Max(x1, x2);
+
+        // Check if y is within the rect's vertical range
+        if (y < rect.y || y > rect.y + rect.h)
+            return false;
+
+        // Check if the horizontal span overlaps the rect
+        return maxX > rect.x && minX < rect.x + rect.w;
+    }
+
+    /// <summary>
+    /// Checks if a vertical line segment from y1 to y2 at x intersects a rectangle.
+    /// </summary>
+    private static bool VSegmentIntersectsRect(int x, int y1, int y2, (int x, int y, int w, int h) rect)
+    {
+        int minY = Math.Min(y1, y2);
+        int maxY = Math.Max(y1, y2);
+
+        // Check if x is within the rect's horizontal range
+        if (x < rect.x || x > rect.x + rect.w)
+            return false;
+
+        // Check if the vertical span overlaps the rect
+        return maxY > rect.y && minY < rect.y + rect.h;
     }
 
     private static string SanitizeId(string value)
