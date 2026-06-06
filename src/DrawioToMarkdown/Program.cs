@@ -2,9 +2,10 @@ using System.CommandLine;
 using System.CommandLine.Invocation;
 using System.Xml;
 using DrawioToMarkdown.Cli;
-using DrawioToMarkdown.Graph;
+using DrawioToMarkdown.Model;
 using DrawioToMarkdown.Output;
 using DrawioToMarkdown.Parsing;
+using DrawioToMarkdown.Resolution;
 
 var (rootCommand, inputArgument, outputArgument) = CliConfiguration.CreateRootCommand();
 
@@ -37,22 +38,46 @@ rootCommand.SetHandler(async (InvocationContext context) =>
         context.ExitCode = 1;
         return;
     }
-
-    // Validate parsed diagram has nodes
-    if (parsed.Nodes.Count == 0)
+    catch (InvalidOperationException)
     {
-        await Console.Error.WriteLineAsync($"Error: No activities found in: {inputPath}");
+        await Console.Error.WriteLineAsync($"Error: Not a recognized draw.io diagram: {inputPath}");
         context.ExitCode = 1;
         return;
     }
 
-    // Build graph
-    var graphBuilder = new GraphBuilder();
-    var graph = graphBuilder.Build(parsed);
+    // Run PositionResolver
+    RoadmapModel model;
+    try
+    {
+        var resolver = new PositionResolver();
+        model = resolver.Resolve(parsed);
+    }
+    catch (InvalidOperationException ex) when (ex.Message.Contains("No category swimlanes"))
+    {
+        await Console.Error.WriteLineAsync($"Error: No category swimlanes detected in: {inputPath}");
+        context.ExitCode = 1;
+        return;
+    }
+    catch (InvalidOperationException ex) when (ex.Message.Contains("No quarter columns"))
+    {
+        await Console.Error.WriteLineAsync($"Error: No quarter columns detected in: {inputPath}");
+        context.ExitCode = 1;
+        return;
+    }
 
     // Generate markdown
-    var generator = new MarkdownGenerator();
-    var markdown = generator.Generate(graph);
+    string markdown;
+    try
+    {
+        var generator = new MarkdownGenerator();
+        markdown = generator.Generate(model);
+    }
+    catch (InvalidOperationException ex)
+    {
+        await Console.Error.WriteLineAsync(ex.Message);
+        context.ExitCode = 1;
+        return;
+    }
 
     // Compute output path if not specified
     var resolvedOutputPath = outputPath ?? Path.ChangeExtension(inputPath, ".md");
@@ -67,7 +92,17 @@ rootCommand.SetHandler(async (InvocationContext context) =>
     }
 
     // Write markdown to output file
-    await File.WriteAllTextAsync(resolvedOutputPath, markdown);
+    try
+    {
+        await File.WriteAllTextAsync(resolvedOutputPath, markdown);
+    }
+    catch (UnauthorizedAccessException)
+    {
+        await Console.Error.WriteLineAsync($"Error: Cannot write to file: {resolvedOutputPath}");
+        context.ExitCode = 1;
+        return;
+    }
+
     context.ExitCode = 0;
 });
 

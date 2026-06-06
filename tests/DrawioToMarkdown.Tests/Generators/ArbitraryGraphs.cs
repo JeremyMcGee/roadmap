@@ -1,4 +1,5 @@
 using DrawioToMarkdown.Graph;
+using DrawioToMarkdown.Model;
 using DrawioToMarkdown.Parsing;
 using FsCheck;
 using FsCheck.Fluent;
@@ -97,7 +98,7 @@ public static class ArbitraryGraphs
         {
             var nodeGens = Enumerable.Range(0, nodeCount)
                 .Select(i => GenAlphanumericString().Select(label =>
-                    new ActivityNode($"n{i}", label)));
+                    new ActivityNodeDef($"n{i}", label, i * 120.0, 0.0, 100.0, 40.0)));
 
             return Gen.CollectToArray(nodeGens).SelectMany(nodes =>
             {
@@ -105,7 +106,7 @@ public static class ArbitraryGraphs
 
                 // Dangling edge generator: edges referencing non-existent IDs
                 var danglingIdGen = GenAlphanumericString().Select(s => $"dangling_{s}");
-                Gen<DependencyEdge> danglingEdgeGen;
+                Gen<DependencyEdgeDef> danglingEdgeGen;
 
                 if (nodeIds.Length > 0)
                 {
@@ -113,14 +114,14 @@ public static class ArbitraryGraphs
                         Gen.Elements(true, false).SelectMany(sourceIsDangling =>
                             Gen.Elements(nodeIds).Select(existingId =>
                                 sourceIsDangling
-                                    ? new DependencyEdge(danglingId, existingId)
-                                    : new DependencyEdge(existingId, danglingId))));
+                                    ? new DependencyEdgeDef(danglingId, existingId)
+                                    : new DependencyEdgeDef(existingId, danglingId))));
                 }
                 else
                 {
                     danglingEdgeGen = danglingIdGen.SelectMany(id1 =>
                         danglingIdGen.Select(id2 =>
-                            new DependencyEdge(id1, id2)));
+                            new DependencyEdgeDef(id1, id2)));
                 }
 
                 if (nodeIds.Length < 2)
@@ -128,13 +129,17 @@ public static class ArbitraryGraphs
                     // Only dangling edges
                     return Gen.Choose(1, 5).SelectMany(danglingCount =>
                         danglingEdgeGen.ArrayOf(danglingCount).Select(danglingEdges =>
-                            new ParsedDiagram(nodes.ToList(), danglingEdges.ToList())));
+                            new ParsedDiagram(
+                                Array.Empty<SwimlaneDef>(),
+                                Array.Empty<QuarterColumnDef>(),
+                                nodes.ToList(),
+                                danglingEdges.ToList())));
                 }
 
                 // Valid edge generator
                 var validEdgeGen = Gen.Two(Gen.Elements(nodeIds))
                     .Where(pair => !string.Equals(pair.Item1, pair.Item2, StringComparison.Ordinal))
-                    .Select(pair => new DependencyEdge(pair.Item1, pair.Item2));
+                    .Select(pair => new DependencyEdgeDef(pair.Item1, pair.Item2));
 
                 var maxValidEdges = Math.Min(nodeCount * 2, nodeCount * (nodeCount - 1));
 
@@ -144,7 +149,11 @@ public static class ArbitraryGraphs
                             danglingEdgeGen.ArrayOf(danglingCount).Select(danglingEdges =>
                             {
                                 var allEdges = validEdges.Concat(danglingEdges).ToList();
-                                return new ParsedDiagram(nodes.ToList(), allEdges);
+                                return new ParsedDiagram(
+                                    Array.Empty<SwimlaneDef>(),
+                                    Array.Empty<QuarterColumnDef>(),
+                                    nodes.ToList(),
+                                    allEdges);
                             }))));
             });
         });
@@ -194,4 +203,52 @@ public static class ArbitraryGraphs
     /// </summary>
     public static Arbitrary<string> ArbFilePath() =>
         GenFilePath().ToArbitrary();
+
+    /// <summary>
+    /// Generator for a valid RoadmapModel with:
+    /// - 1–20 activities with unique non-empty alphanumeric labels
+    /// - Quarters in "Q{1-4} {2020-2030}" format
+    /// - Categories from a random pool
+    /// - 0–5 dependency labels referencing other activity labels in the model
+    /// </summary>
+    public static Gen<RoadmapModel> GenRoadmapModel()
+    {
+        var quarters = new[] { "Q1 2024", "Q2 2024", "Q3 2024", "Q4 2024", "Q1 2025", "Q2 2025" };
+        var categories = new[] { "Infrastructure", "Platform", "Security", "Data", "Frontend" };
+
+        return Gen.Choose(1, 20).SelectMany(activityCount =>
+        {
+            // Generate unique labels
+            var labelGens = Enumerable.Range(0, activityCount)
+                .Select(i => GenAlphanumericString().Select(s => $"{s}{i}"));
+
+            return Gen.CollectToArray(labelGens).SelectMany(labels =>
+            {
+                var activityGens = labels.Select(label =>
+                    Gen.Elements(quarters).SelectMany(quarter =>
+                        Gen.Elements(categories).SelectMany(category =>
+                        {
+                            // Generate 0–5 dependency labels from other labels in the model
+                            var otherLabels = labels.Where(l => l != label).ToArray();
+                            if (otherLabels.Length == 0)
+                            {
+                                return Gen.Constant(new RoadmapActivity(label, quarter, category, Array.Empty<string>()));
+                            }
+                            var maxDeps = Math.Min(5, otherLabels.Length);
+                            return Gen.Choose(0, maxDeps).SelectMany(depCount =>
+                                Gen.Elements(otherLabels).ArrayOf(depCount).Select(deps =>
+                                    new RoadmapActivity(label, quarter, category, deps.Distinct().ToArray())));
+                        })));
+
+                return Gen.CollectToArray(activityGens).Select(activities =>
+                    new RoadmapModel(activities.ToList()));
+            });
+        });
+    }
+
+    /// <summary>
+    /// Arbitrary instance for RoadmapModel.
+    /// </summary>
+    public static Arbitrary<RoadmapModel> ArbRoadmapModel() =>
+        GenRoadmapModel().ToArbitrary();
 }

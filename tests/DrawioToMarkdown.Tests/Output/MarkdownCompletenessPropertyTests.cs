@@ -1,5 +1,5 @@
 // Feature: drawio-to-markdown, Property 4: Markdown Output Completeness
-using DrawioToMarkdown.Graph;
+using DrawioToMarkdown.Model;
 using DrawioToMarkdown.Output;
 using DrawioToMarkdown.Tests.Generators;
 using FsCheck;
@@ -11,81 +11,78 @@ namespace DrawioToMarkdown.Tests.Output;
 /// Property 4: Markdown Output Completeness
 /// Validates: Requirements 3.2, 3.3, 3.4, 3.5
 ///
-/// For any valid DependencyGraph, the generated Markdown string SHALL contain:
+/// For any valid RoadmapModel, the generated Markdown string SHALL contain:
 /// (a) the heading "# Dependency Documentation",
-/// (b) a "## {label}" section for every node in the graph,
-/// (c) for each node with antecedents, a "Depends on" sub-section listing each prerequisite node's label,
-/// (d) for each node without antecedents, an indication that it has no dependencies.
+/// (b) a "## {label}" section for every activity in the model,
+/// (c) for each activity with dependencies, a "Depends on" sub-section listing each dependency label,
+/// (d) for each activity without dependencies, an indication that it has no dependencies.
 /// </summary>
 public class MarkdownCompletenessPropertyTests
 {
     private readonly MarkdownGenerator _generator = new();
 
     /// <summary>
-    /// Provides the custom Arbitrary for DependencyGraph to FsCheck.
+    /// Provides the custom Arbitrary for RoadmapModel to FsCheck.
     /// </summary>
     public static class Arbitraries
     {
-        public static Arbitrary<DependencyGraph> DependencyGraphArbitrary() =>
-            ArbitraryGraphs.ArbDependencyGraph();
+        public static Arbitrary<RoadmapModel> RoadmapModelArbitrary() =>
+            ArbitraryGraphs.ArbRoadmapModel();
     }
 
     /// <summary>
     /// **Validates: Requirements 3.2, 3.3, 3.4, 3.5**
     ///
-    /// For any valid DependencyGraph, the generated Markdown output contains:
+    /// For any valid RoadmapModel, the generated Markdown output contains:
     /// (a) the heading "# Dependency Documentation",
-    /// (b) a "## {label}" section for every node,
-    /// (c) for each node with dependencies, each prerequisite node's label appears in the output,
-    /// (d) for each node without dependencies, "No dependencies" appears in the output.
+    /// (b) a "## {label}" section for every activity,
+    /// (c) for each activity with dependencies, each dependency label appears in the output,
+    /// (d) for each activity without dependencies, "No dependencies" appears in the output.
     /// </summary>
     [Property(MaxTest = 100, Arbitrary = new[] { typeof(Arbitraries) })]
-    public bool MarkdownOutputContainsAllRequiredSections(DependencyGraph graph)
+    public bool MarkdownOutputContainsAllRequiredSections(RoadmapModel model)
     {
-        var markdown = _generator.Generate(graph);
+        var markdown = _generator.Generate(model);
 
         // (a) Output contains the main heading
         if (!markdown.Contains("# Dependency Documentation"))
             return false;
 
-        // Parse the markdown into per-node sections for verification.
+        // Parse the markdown into per-activity sections for verification.
         var sections = ParseSections(markdown);
 
-        // (b) There must be exactly as many sections as there are nodes
-        if (sections.Count != graph.Nodes.Count)
+        // (b) There must be exactly as many sections as there are activities
+        if (sections.Count != model.Activities.Count)
             return false;
 
-        // (b) Every node's label must appear as a section heading
-        foreach (var node in graph.Nodes.Values)
+        // (b) Every activity's label must appear as a section heading
+        foreach (var activity in model.Activities)
         {
-            if (!markdown.Contains($"## {node.Label}"))
+            if (!markdown.Contains($"## {activity.Label}"))
                 return false;
         }
 
-        // (c) For each node with dependencies, each prerequisite node's label
+        // (c) For each activity with dependencies, each dependency label
         // must appear in the markdown output
-        foreach (var node in graph.Nodes.Values)
+        foreach (var activity in model.Activities)
         {
-            if (graph.Dependencies.TryGetValue(node.Id, out var depIds) && depIds.Count > 0)
+            if (activity.DependencyLabels.Count > 0)
             {
-                foreach (var depId in depIds)
+                foreach (var depLabel in activity.DependencyLabels)
                 {
-                    var depLabel = graph.Nodes[depId].Label;
                     if (!markdown.Contains(depLabel))
                         return false;
                 }
             }
         }
 
-        // (d) For each node without dependencies, verify "No dependencies" appears
-        // in at least one section with that node's label
-        foreach (var node in graph.Nodes.Values)
+        // (d) For each activity without dependencies, verify "No dependencies" appears
+        // in the section for that activity
+        foreach (var activity in model.Activities)
         {
-            var hasDeps = graph.Dependencies.TryGetValue(node.Id, out var deps) && deps.Count > 0;
-            if (!hasDeps)
+            if (activity.DependencyLabels.Count == 0)
             {
-                // Find all sections with this node's label
-                var matchingSections = sections.Where(s => s.Label == node.Label).ToList();
+                var matchingSections = sections.Where(s => s.Label == activity.Label).ToList();
                 if (!matchingSections.Any(s => s.Content.Contains("No dependencies")))
                     return false;
             }

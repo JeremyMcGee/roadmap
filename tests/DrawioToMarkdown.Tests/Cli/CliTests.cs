@@ -2,24 +2,78 @@ using System.CommandLine;
 using System.CommandLine.Invocation;
 using System.Xml;
 using DrawioToMarkdown.Cli;
-using DrawioToMarkdown.Graph;
+using DrawioToMarkdown.Model;
 using DrawioToMarkdown.Output;
 using DrawioToMarkdown.Parsing;
+using DrawioToMarkdown.Resolution;
 using Xunit;
 
 namespace DrawioToMarkdown.Tests.Cli;
 
 /// <summary>
-/// Unit tests for CLI behavior: help flag, missing input file, default output path,
-/// and non-existent output directory.
+/// Unit tests for CLI behavior: help flag, missing input file, malformed XML,
+/// unrecognized structure, missing swimlanes, missing quarter columns,
+/// output directory not found, and successful conversion.
 /// </summary>
 public class CliTests : IDisposable
 {
     private readonly List<string> _tempFiles = new();
     private readonly List<string> _tempDirs = new();
 
+    /// <summary>
+    /// Valid draw.io XML containing swimlanes, quarter columns, and an activity node
+    /// so that it passes through the full pipeline (DrawioParser → PositionResolver → MarkdownGenerator).
+    /// </summary>
     private const string ValidDrawioXml =
-        """<mxfile><diagram name="Page-1"><mxGraphModel><root><mxCell id="0" /><mxCell id="1" parent="0" /><mxCell id="2" value="Task A" vertex="1" parent="1" /></root></mxGraphModel></diagram></mxfile>""";
+        """
+        <mxfile><diagram name="Page-1"><mxGraphModel><root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="lane1" value="Infrastructure" style="shape=swimlane;horizontal=0;startSize=30;" vertex="1" parent="1"><mxGeometry x="0" y="0" width="800" height="200" /></mxCell>
+        <mxCell id="qlabel_q1" value="Q1 2025" vertex="1" parent="1"><mxGeometry x="100" y="0" width="200" height="30" /></mxCell>
+        <mxCell id="act1" value="Task A" style="rounded=1;whiteSpace=wrap;html=1" vertex="1" parent="1"><mxGeometry x="150" y="80" width="100" height="40" /></mxCell>
+        </root></mxGraphModel></diagram></mxfile>
+        """;
+
+    /// <summary>
+    /// Valid draw.io XML with an activity and a swimlane but NO quarter columns (no qlabel_ elements).
+    /// This should trigger the "No quarter columns" error from PositionResolver.
+    /// </summary>
+    private const string XmlWithSwimlaneButNoQuarters =
+        """
+        <mxfile><diagram name="Page-1"><mxGraphModel><root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="lane1" value="Infrastructure" style="shape=swimlane;horizontal=0;startSize=30;" vertex="1" parent="1"><mxGeometry x="0" y="0" width="800" height="200" /></mxCell>
+        <mxCell id="act1" value="Task A" style="rounded=1;whiteSpace=wrap;html=1" vertex="1" parent="1"><mxGeometry x="150" y="80" width="100" height="40" /></mxCell>
+        </root></mxGraphModel></diagram></mxfile>
+        """;
+
+    /// <summary>
+    /// Valid draw.io XML with an activity and a quarter column but NO swimlanes.
+    /// This should trigger the "No category swimlanes" error from PositionResolver.
+    /// </summary>
+    private const string XmlWithQuarterButNoSwimlanes =
+        """
+        <mxfile><diagram name="Page-1"><mxGraphModel><root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="qlabel_q1" value="Q1 2025" vertex="1" parent="1"><mxGeometry x="100" y="0" width="200" height="30" /></mxCell>
+        <mxCell id="act1" value="Task A" style="rounded=1;whiteSpace=wrap;html=1" vertex="1" parent="1"><mxGeometry x="150" y="80" width="100" height="40" /></mxCell>
+        </root></mxGraphModel></diagram></mxfile>
+        """;
+
+    /// <summary>
+    /// Valid XML but without the expected mxfile/diagram/mxGraphModel/root structure.
+    /// This should trigger the "Not a recognized draw.io diagram" error.
+    /// </summary>
+    private const string XmlWithoutMxfileStructure =
+        """<root><data>Not a draw.io file</data></root>""";
+
+    /// <summary>
+    /// Malformed XML content that cannot be parsed.
+    /// </summary>
+    private const string MalformedXml = """<mxfile><broken><unclosed""";
 
     /// <summary>
     /// Sets up a RootCommand with the same handler wiring as Program.cs
@@ -58,22 +112,46 @@ public class CliTests : IDisposable
                 context.ExitCode = 1;
                 return;
             }
-
-            // Validate parsed diagram has nodes
-            if (parsed.Nodes.Count == 0)
+            catch (InvalidOperationException)
             {
-                await Console.Error.WriteLineAsync($"Error: No activities found in: {inputPath}");
+                await Console.Error.WriteLineAsync($"Error: Not a recognized draw.io diagram: {inputPath}");
                 context.ExitCode = 1;
                 return;
             }
 
-            // Build graph
-            var graphBuilder = new GraphBuilder();
-            var graph = graphBuilder.Build(parsed);
+            // Run PositionResolver
+            RoadmapModel model;
+            try
+            {
+                var resolver = new PositionResolver();
+                model = resolver.Resolve(parsed);
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("No category swimlanes"))
+            {
+                await Console.Error.WriteLineAsync($"Error: No category swimlanes detected in: {inputPath}");
+                context.ExitCode = 1;
+                return;
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("No quarter columns"))
+            {
+                await Console.Error.WriteLineAsync($"Error: No quarter columns detected in: {inputPath}");
+                context.ExitCode = 1;
+                return;
+            }
 
             // Generate markdown
-            var generator = new MarkdownGenerator();
-            var markdown = generator.Generate(graph);
+            string markdown;
+            try
+            {
+                var generator = new MarkdownGenerator();
+                markdown = generator.Generate(model);
+            }
+            catch (InvalidOperationException ex)
+            {
+                await Console.Error.WriteLineAsync(ex.Message);
+                context.ExitCode = 1;
+                return;
+            }
 
             // Compute output path if not specified
             var resolvedOutputPath = outputPath ?? Path.ChangeExtension(inputPath, ".md");
@@ -88,7 +166,17 @@ public class CliTests : IDisposable
             }
 
             // Write markdown to output file
-            await File.WriteAllTextAsync(resolvedOutputPath, markdown);
+            try
+            {
+                await File.WriteAllTextAsync(resolvedOutputPath, markdown);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                await Console.Error.WriteLineAsync($"Error: Cannot write to file: {resolvedOutputPath}");
+                context.ExitCode = 1;
+                return;
+            }
+
             context.ExitCode = 0;
         });
 
@@ -100,7 +188,6 @@ public class CliTests : IDisposable
     [InlineData("-h")]
     public async Task HelpFlag_PrintsUsageAndExits0(string helpArg)
     {
-        // The help flag is handled automatically by System.CommandLine
         var (rootCommand, _, _) = CliConfiguration.CreateRootCommand();
 
         var exitCode = await rootCommand.InvokeAsync(new[] { helpArg });
@@ -109,7 +196,7 @@ public class CliTests : IDisposable
     }
 
     [Fact]
-    public async Task MissingInputFile_ExitsWithNonZeroCode()
+    public async Task MissingInputFile_ExitsWithCode1()
     {
         var rootCommand = CreateWiredCommand();
         var nonExistentPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString(), "missing.drawio");
@@ -120,15 +207,89 @@ public class CliTests : IDisposable
     }
 
     [Fact]
-    public async Task DefaultOutputPath_ReplacesExtensionWithMd()
+    public async Task MalformedXml_ExitsWithCode1()
     {
         var rootCommand = CreateWiredCommand();
 
-        // Create a temp directory and a .drawio file with valid content
-        var tempDir = Path.Combine(Path.GetTempPath(), $"cli_test_{Guid.NewGuid()}");
-        Directory.CreateDirectory(tempDir);
-        _tempDirs.Add(tempDir);
+        var tempDir = CreateTempDir();
+        var inputPath = Path.Combine(tempDir, "bad.drawio");
+        await File.WriteAllTextAsync(inputPath, MalformedXml);
+        _tempFiles.Add(inputPath);
 
+        var exitCode = await rootCommand.InvokeAsync(new[] { inputPath });
+
+        Assert.Equal(1, exitCode);
+    }
+
+    [Fact]
+    public async Task MissingMxfileStructure_ExitsWithCode1()
+    {
+        var rootCommand = CreateWiredCommand();
+
+        var tempDir = CreateTempDir();
+        var inputPath = Path.Combine(tempDir, "not_drawio.xml");
+        await File.WriteAllTextAsync(inputPath, XmlWithoutMxfileStructure);
+        _tempFiles.Add(inputPath);
+
+        var exitCode = await rootCommand.InvokeAsync(new[] { inputPath });
+
+        Assert.Equal(1, exitCode);
+    }
+
+    [Fact]
+    public async Task MissingSwimlanes_ExitsWithCode1()
+    {
+        var rootCommand = CreateWiredCommand();
+
+        var tempDir = CreateTempDir();
+        var inputPath = Path.Combine(tempDir, "no_swimlanes.drawio");
+        await File.WriteAllTextAsync(inputPath, XmlWithQuarterButNoSwimlanes);
+        _tempFiles.Add(inputPath);
+
+        var exitCode = await rootCommand.InvokeAsync(new[] { inputPath });
+
+        Assert.Equal(1, exitCode);
+    }
+
+    [Fact]
+    public async Task MissingQuarterColumns_ExitsWithCode1()
+    {
+        var rootCommand = CreateWiredCommand();
+
+        var tempDir = CreateTempDir();
+        var inputPath = Path.Combine(tempDir, "no_quarters.drawio");
+        await File.WriteAllTextAsync(inputPath, XmlWithSwimlaneButNoQuarters);
+        _tempFiles.Add(inputPath);
+
+        var exitCode = await rootCommand.InvokeAsync(new[] { inputPath });
+
+        Assert.Equal(1, exitCode);
+    }
+
+    [Fact]
+    public async Task NonExistentOutputDirectory_ExitsWithCode1()
+    {
+        var rootCommand = CreateWiredCommand();
+
+        var tempDir = CreateTempDir();
+        var inputPath = Path.Combine(tempDir, "diagram.drawio");
+        await File.WriteAllTextAsync(inputPath, ValidDrawioXml);
+        _tempFiles.Add(inputPath);
+
+        // Specify an output path in a directory that doesn't exist
+        var nonExistentOutputPath = Path.Combine(tempDir, "nonexistent_subdir", "output.md");
+
+        var exitCode = await rootCommand.InvokeAsync(new[] { inputPath, nonExistentOutputPath });
+
+        Assert.Equal(1, exitCode);
+    }
+
+    [Fact]
+    public async Task SuccessfulConversion_ExitsWithCode0AndCreatesOutputFile()
+    {
+        var rootCommand = CreateWiredCommand();
+
+        var tempDir = CreateTempDir();
         var inputPath = Path.Combine(tempDir, "diagram.drawio");
         await File.WriteAllTextAsync(inputPath, ValidDrawioXml);
         _tempFiles.Add(inputPath);
@@ -143,25 +304,30 @@ public class CliTests : IDisposable
     }
 
     [Fact]
-    public async Task NonExistentOutputDirectory_ExitsWithNonZeroCode()
+    public async Task DefaultOutputPath_ReplacesExtensionWithMd()
     {
         var rootCommand = CreateWiredCommand();
 
-        // Create a temp .drawio file with valid content in an existing directory
-        var tempDir = Path.Combine(Path.GetTempPath(), $"cli_test_{Guid.NewGuid()}");
-        Directory.CreateDirectory(tempDir);
-        _tempDirs.Add(tempDir);
-
-        var inputPath = Path.Combine(tempDir, "diagram.drawio");
+        var tempDir = CreateTempDir();
+        var inputPath = Path.Combine(tempDir, "roadmap.drawio");
         await File.WriteAllTextAsync(inputPath, ValidDrawioXml);
         _tempFiles.Add(inputPath);
 
-        // Specify an output path in a directory that doesn't exist
-        var nonExistentOutputPath = Path.Combine(tempDir, "nonexistent_subdir", "output.md");
+        var expectedOutputPath = Path.Combine(tempDir, "roadmap.md");
 
-        var exitCode = await rootCommand.InvokeAsync(new[] { inputPath, nonExistentOutputPath });
+        var exitCode = await rootCommand.InvokeAsync(new[] { inputPath });
 
-        Assert.Equal(1, exitCode);
+        Assert.Equal(0, exitCode);
+        Assert.True(File.Exists(expectedOutputPath), $"Expected output file at: {expectedOutputPath}");
+        _tempFiles.Add(expectedOutputPath);
+    }
+
+    private string CreateTempDir()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"cli_test_{Guid.NewGuid()}");
+        Directory.CreateDirectory(tempDir);
+        _tempDirs.Add(tempDir);
+        return tempDir;
     }
 
     public void Dispose()

@@ -13,16 +13,18 @@ public class GraphBuilderTests
     {
         // Arrange — nodes A, B, C with edges A→B, B→C
         var diagram = new ParsedDiagram(
-            Nodes: new[]
+            Swimlanes: Array.Empty<SwimlaneDef>(),
+            QuarterColumns: Array.Empty<QuarterColumnDef>(),
+            ActivityNodes: new[]
             {
-                new ActivityNode("A", "Task A"),
-                new ActivityNode("B", "Task B"),
-                new ActivityNode("C", "Task C")
+                new ActivityNodeDef("A", "Task A", 0, 0, 100, 40),
+                new ActivityNodeDef("B", "Task B", 0, 50, 100, 40),
+                new ActivityNodeDef("C", "Task C", 0, 100, 100, 40)
             },
             Edges: new[]
             {
-                new DependencyEdge("A", "B"),
-                new DependencyEdge("B", "C")
+                new DependencyEdgeDef("A", "B"),
+                new DependencyEdgeDef("B", "C")
             }
         );
 
@@ -48,17 +50,19 @@ public class GraphBuilderTests
     {
         // Arrange — edges referencing non-existent node IDs
         var diagram = new ParsedDiagram(
-            Nodes: new[]
+            Swimlanes: Array.Empty<SwimlaneDef>(),
+            QuarterColumns: Array.Empty<QuarterColumnDef>(),
+            ActivityNodes: new[]
             {
-                new ActivityNode("1", "Node One"),
-                new ActivityNode("2", "Node Two")
+                new ActivityNodeDef("1", "Node One", 0, 0, 100, 40),
+                new ActivityNodeDef("2", "Node Two", 0, 50, 100, 40)
             },
             Edges: new[]
             {
-                new DependencyEdge("1", "2"),        // valid
-                new DependencyEdge("1", "999"),      // target doesn't exist
-                new DependencyEdge("888", "2"),      // source doesn't exist
-                new DependencyEdge("777", "999")     // both don't exist
+                new DependencyEdgeDef("1", "2"),        // valid
+                new DependencyEdgeDef("1", "999"),      // target doesn't exist
+                new DependencyEdgeDef("888", "2"),      // source doesn't exist
+                new DependencyEdgeDef("777", "999")     // both don't exist
             }
         );
 
@@ -80,16 +84,18 @@ public class GraphBuilderTests
     {
         // Arrange — multiple identical edges (same source/target)
         var diagram = new ParsedDiagram(
-            Nodes: new[]
+            Swimlanes: Array.Empty<SwimlaneDef>(),
+            QuarterColumns: Array.Empty<QuarterColumnDef>(),
+            ActivityNodes: new[]
             {
-                new ActivityNode("X", "Node X"),
-                new ActivityNode("Y", "Node Y")
+                new ActivityNodeDef("X", "Node X", 0, 0, 100, 40),
+                new ActivityNodeDef("Y", "Node Y", 0, 50, 100, 40)
             },
             Edges: new[]
             {
-                new DependencyEdge("X", "Y"),
-                new DependencyEdge("X", "Y"),
-                new DependencyEdge("X", "Y")
+                new DependencyEdgeDef("X", "Y"),
+                new DependencyEdgeDef("X", "Y"),
+                new DependencyEdgeDef("X", "Y")
             }
         );
 
@@ -106,13 +112,15 @@ public class GraphBuilderTests
     {
         // Arrange — nodes with no edges
         var diagram = new ParsedDiagram(
-            Nodes: new[]
+            Swimlanes: Array.Empty<SwimlaneDef>(),
+            QuarterColumns: Array.Empty<QuarterColumnDef>(),
+            ActivityNodes: new[]
             {
-                new ActivityNode("A", "Alpha"),
-                new ActivityNode("B", "Beta"),
-                new ActivityNode("C", "Gamma")
+                new ActivityNodeDef("A", "Alpha", 0, 0, 100, 40),
+                new ActivityNodeDef("B", "Beta", 0, 50, 100, 40),
+                new ActivityNodeDef("C", "Gamma", 0, 100, 100, 40)
             },
-            Edges: Array.Empty<DependencyEdge>()
+            Edges: Array.Empty<DependencyEdgeDef>()
         );
 
         // Act

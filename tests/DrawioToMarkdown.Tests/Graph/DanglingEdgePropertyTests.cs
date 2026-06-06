@@ -57,7 +57,7 @@ public class DanglingEdgePropertyTests
     {
         var graph = _builder.Build(diagram);
 
-        var nodeIds = new HashSet<string>(diagram.Nodes.Select(n => n.Id));
+        var nodeIds = new HashSet<string>(diagram.ActivityNodes.Select(n => n.Id));
 
         // Identify valid edges: both source and target are in the node set
         var validEdges = diagram.Edges

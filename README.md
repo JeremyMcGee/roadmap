@@ -15,7 +15,7 @@ dotnet test tests/MarkdownToDrawio.Tests
 
 ## DrawioToMarkdown
 
-Converts Draw.io XML diagram files into structured Markdown documentation of activity dependencies. Feed it a `.drawio` file containing your roadmap and it produces a `.md` file showing what depends on what.
+Converts Draw.io XML diagram files into structured Markdown roadmap documentation. The tool parses swimlane diagrams containing horizontal category bands and vertical quarter columns, infers each activity's category and quarter from its geometric position, and produces a Markdown file in the exact format expected by `MarkdownToDrawio`. This enables a full round-trip workflow: generate a diagram → edit in Draw.io → regenerate the markdown.
 
 ### Usage
 
@@ -24,7 +24,7 @@ Converts Draw.io XML diagram files into structured Markdown documentation of act
 dotnet run --project src/DrawioToMarkdown -- path/to/diagram.drawio
 
 # Specify an output path
-dotnet run --project src/DrawioToMarkdown -- path/to/diagram.drawio output/dependencies.md
+dotnet run --project src/DrawioToMarkdown -- path/to/diagram.drawio output/roadmap.md
 
 # Show help
 dotnet run --project src/DrawioToMarkdown -- --help
@@ -32,13 +32,14 @@ dotnet run --project src/DrawioToMarkdown -- --help
 
 ### How it works
 
-1. **Parse** — Reads Draw.io XML (mxGraph format), extracts activity nodes and dependency edges
-2. **Build Graph** — Constructs a dependency graph, filtering dangling edges and deduplicating
-3. **Generate Markdown** — Produces a structured document with nodes sorted alphabetically, each listing its prerequisites
+1. **Parse** — Reads Draw.io XML (mxGraph format), extracts category swimlanes, quarter column labels, activity nodes with geometry, and dependency edges
+2. **Resolve Positions** — Assigns each activity a category (from swimlane containment) and quarter (from quarter column containment) based on its geometric center, with closest-midpoint fallback for ambiguous cases
+3. **Resolve Dependencies** — Filters dangling/self-referencing edges, deduplicates, and merges dependency sets for duplicate activity labels
+4. **Generate Markdown** — Produces a structured document with activities sorted alphabetically, each listing dependencies, quarter, and category in the exact format consumed by `MarkdownToDrawio`
 
 ### Example
 
-Given a Draw.io diagram with activities "Design API", "Implement Backend", and "Write Tests" where Design → Implement → Tests, the tool outputs:
+Given a Draw.io diagram with swimlanes ("Infrastructure", "Quality"), quarter columns ("Q1 2025", "Q2 2025"), and activities positioned within them, the tool outputs:
 
 ```markdown
 # Dependency Documentation
@@ -49,27 +50,52 @@ Given a Draw.io diagram with activities "Design API", "Implement Backend", and "
 
 No dependencies
 
+### Quarter
+
+Q1 2025
+
+### Category
+
+Infrastructure
+
 ## Implement Backend
 
 ### Depends on
 
-- Design API
+- [Design API](#design-api)
+
+### Quarter
+
+Q2 2025
+
+### Category
+
+Infrastructure
 
 ## Write Tests
 
 ### Depends on
 
-- Implement Backend
+- [Implement Backend](#implement-backend)
+
+### Quarter
+
+Q2 2025
+
+### Category
+
+Quality
 ```
 
 ### Project structure
 
 ```
 src/DrawioToMarkdown/
-├── Program.cs              # CLI entry point
+├── Program.cs              # CLI entry point and pipeline orchestration
 ├── Cli/                    # System.CommandLine configuration
-├── Parsing/                # Draw.io XML parser
-├── Graph/                  # Dependency graph builder and data models
+├── Parsing/                # Draw.io XML parser (swimlanes, quarters, nodes, edges)
+├── Resolution/             # Position resolver (category/quarter assignment)
+├── Model/                  # Domain models (RoadmapModel, RoadmapActivity)
 └── Output/                 # Markdown generator and XML pretty-printer
 ```
 
@@ -276,9 +302,26 @@ src/MarkdownToDrawio/
 
 ---
 
+## Round-Trip Workflow
+
+The two tools form a complete round-trip:
+
+```
+Markdown ──[MarkdownToDrawio]──▶ Draw.io XML ──[edit in Draw.io]──▶ Draw.io XML ──[DrawioToMarkdown]──▶ Markdown
+```
+
+1. Write your roadmap in Markdown with activity dependencies, quarters, and categories
+2. Generate a Draw.io diagram with `MarkdownToDrawio`
+3. Visually rearrange activities in Draw.io (move between swimlanes/quarters, add/remove nodes and edges)
+4. Regenerate the Markdown with `DrawioToMarkdown` — positions are inferred from the geometry
+
+The output of `DrawioToMarkdown` is byte-for-byte identical to what `MarkdownToDrawio` expects as input, so the cycle can repeat indefinitely.
+
+---
+
 ## Testing
 
-Both projects have comprehensive test suites combining unit tests and property-based tests (FsCheck, 100 iterations per property).
+Both projects have comprehensive test suites combining unit tests and property-based tests (FsCheck, 100–200 iterations per property).
 
 ```bash
 # Run all tests
@@ -286,6 +329,14 @@ dotnet test tests/DrawioToMarkdown.Tests
 dotnet test tests/MarkdownToDrawio.Tests
 ```
 
-**DrawioToMarkdown** tests validate: parse/print round-trip, dangling edge filtering, edge deduplication, markdown completeness, default output path derivation.
+**DrawioToMarkdown** tests validate:
+- XML round-trip (print → parse → resolve → compare model)
+- Markdown round-trip (generate → parse → compare model)
+- Full pipeline round-trip (MarkdownToDrawio generate → DrawioToMarkdown parse/resolve/generate → MarkdownToDrawio parse → compare)
+- Byte-for-byte markdown compatibility with MarkdownToDrawio's pretty-printer
+- Position resolver correctness (category and quarter assignment)
+- Duplicate label merging
+- Edge filtering (dangling, self-referencing, deduplication)
+- CLI error handling (missing files, malformed XML, missing swimlanes/quarters)
 
 **MarkdownToDrawio** tests validate: parse/print round-trip, metadata validation completeness, unresolved dependency detection, XML validity, swimlane structure, quarter column ordering, activity placement, dependency edge accuracy, default output path derivation.

@@ -1,11 +1,11 @@
-using DrawioToMarkdown.Graph;
+using DrawioToMarkdown.Model;
 
 namespace DrawioToMarkdown.Output;
 
 /// <summary>
-/// Generates Markdown from a DependencyGraph.
+/// Generates roadmap Markdown from a RoadmapModel.
 /// </summary>
 public interface IMarkdownGenerator
 {
-    string Generate(DependencyGraph graph);
+    string Generate(RoadmapModel model);
 }

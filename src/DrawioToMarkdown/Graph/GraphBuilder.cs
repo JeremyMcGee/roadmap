@@ -10,16 +10,16 @@ public sealed class GraphBuilder : IGraphBuilder
 {
     public DependencyGraph Build(ParsedDiagram diagram)
     {
-        // Index all nodes by ID
+        // Index all activity nodes by ID, mapping to the Graph.ActivityNode type
         var nodes = new Dictionary<string, ActivityNode>();
-        foreach (var node in diagram.Nodes)
+        foreach (var node in diagram.ActivityNodes)
         {
-            nodes[node.Id] = node;
+            nodes[node.Id] = new ActivityNode(node.Id, node.Label);
         }
 
         // Initialize dependency sets for every node (even those with no dependencies)
         var dependencies = new Dictionary<string, HashSet<string>>();
-        foreach (var node in diagram.Nodes)
+        foreach (var node in diagram.ActivityNodes)
         {
             dependencies[node.Id] = new HashSet<string>();
         }

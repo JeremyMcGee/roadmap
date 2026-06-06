@@ -45,10 +45,10 @@ public class ArbitraryGraphsTests
         foreach (var diagram in samples)
         {
             // Has at least one node
-            Assert.NotEmpty(diagram.Nodes);
+            Assert.NotEmpty(diagram.ActivityNodes);
 
             // All nodes have non-empty IDs and labels
-            foreach (var node in diagram.Nodes)
+            foreach (var node in diagram.ActivityNodes)
             {
                 Assert.False(string.IsNullOrEmpty(node.Id));
                 Assert.False(string.IsNullOrEmpty(node.Label));
@@ -58,7 +58,7 @@ public class ArbitraryGraphsTests
             Assert.NotEmpty(diagram.Edges);
 
             // Verify some edges are dangling (reference non-existent node IDs)
-            var nodeIds = diagram.Nodes.Select(n => n.Id).ToHashSet();
+            var nodeIds = diagram.ActivityNodes.Select(n => n.Id).ToHashSet();
             var hasDangling = diagram.Edges.Any(e =>
                 !nodeIds.Contains(e.SourceId) || !nodeIds.Contains(e.TargetId));
             Assert.True(hasDangling, "ParsedDiagram should contain at least one dangling edge");

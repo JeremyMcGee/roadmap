@@ -1,65 +1,84 @@
 using System.Text;
-using System.Text.RegularExpressions;
-using DrawioToMarkdown.Graph;
+using DrawioToMarkdown.Model;
 
 namespace DrawioToMarkdown.Output;
 
 /// <summary>
-/// Generates Markdown documentation from a DependencyGraph.
+/// Generates roadmap Markdown documentation from a RoadmapModel.
+/// Output is byte-for-byte identical to MarkdownToDrawio's MarkdownPrettyPrinter.Print().
 /// </summary>
 public sealed class MarkdownGenerator : IMarkdownGenerator
 {
-    public string Generate(DependencyGraph graph)
+    public string Generate(RoadmapModel model)
     {
+        // Validate: no activity may have null/empty quarter or category
+        foreach (var activity in model.Activities)
+        {
+            if (string.IsNullOrEmpty(activity.Quarter))
+            {
+                throw new InvalidOperationException(
+                    $"Error: Activity \"{activity.Label}\" has no resolved quarter");
+            }
+
+            if (string.IsNullOrEmpty(activity.Category))
+            {
+                throw new InvalidOperationException(
+                    $"Error: Activity \"{activity.Label}\" has no resolved category");
+            }
+        }
+
         var sb = new StringBuilder();
 
         sb.AppendLine("# Dependency Documentation");
-        sb.AppendLine();
 
-        var sortedNodes = graph.Nodes.Values
-            .OrderBy(n => n.Label, StringComparer.Ordinal)
+        var sortedActivities = model.Activities
+            .OrderBy(a => a.Label, StringComparer.Ordinal)
             .ToList();
 
-        foreach (var node in sortedNodes)
+        foreach (var activity in sortedActivities)
         {
-            sb.AppendLine($"## {node.Label}");
+            sb.AppendLine();
+            sb.AppendLine($"## {activity.Label}");
             sb.AppendLine();
             sb.AppendLine("### Depends on");
             sb.AppendLine();
 
-            if (graph.Dependencies.TryGetValue(node.Id, out var depIds) && depIds.Count > 0)
-            {
-                var labels = depIds
-                    .Select(id => graph.Nodes[id].Label)
-                    .OrderBy(label => label, StringComparer.Ordinal)
-                    .ToList();
-
-                foreach (var label in labels)
-                {
-                    var anchor = ToAnchor(label);
-                    sb.AppendLine($"- [{label}](#{anchor})");
-                }
-            }
-            else
+            if (activity.DependencyLabels.Count == 0)
             {
                 sb.AppendLine("No dependencies");
             }
+            else
+            {
+                var sortedDeps = activity.DependencyLabels
+                    .OrderBy(d => d, StringComparer.Ordinal)
+                    .ToList();
+
+                foreach (var dep in sortedDeps)
+                {
+                    var anchor = GenerateAnchor(dep);
+                    sb.AppendLine($"- [{dep}](#{anchor})");
+                }
+            }
 
             sb.AppendLine();
+            sb.AppendLine("### Quarter");
+            sb.AppendLine();
+            sb.AppendLine(activity.Quarter ?? string.Empty);
+            sb.AppendLine();
+            sb.AppendLine("### Category");
+            sb.AppendLine();
+            sb.AppendLine(activity.Category ?? string.Empty);
         }
 
         return sb.ToString();
     }
 
     /// <summary>
-    /// Converts a heading text to a GitHub/CommonMark-style anchor slug.
-    /// Lowercase, spaces become hyphens, non-alphanumeric/hyphen characters removed.
+    /// Generates a Markdown anchor from a label by lowercasing and replacing spaces with hyphens.
+    /// Uses the same algorithm as MarkdownToDrawio's MarkdownPrettyPrinter for byte-for-byte compatibility.
     /// </summary>
-    private static string ToAnchor(string heading)
+    private static string GenerateAnchor(string label)
     {
-        var lower = heading.ToLowerInvariant();
-        var slug = Regex.Replace(lower, @"[^\w\s-]", string.Empty);
-        slug = Regex.Replace(slug, @"\s+", "-");
-        return slug.Trim('-');
+        return label.ToLowerInvariant().Replace(' ', '-');
     }
 }

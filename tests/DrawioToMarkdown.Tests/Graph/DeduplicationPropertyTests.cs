@@ -44,7 +44,11 @@ public class DeduplicationPropertyTests
 
         // Create a modified diagram with all edges duplicated
         var duplicatedEdges = diagram.Edges.Concat(diagram.Edges).ToList();
-        var duplicatedDiagram = new ParsedDiagram(diagram.Nodes, duplicatedEdges);
+        var duplicatedDiagram = new ParsedDiagram(
+            diagram.Swimlanes,
+            diagram.QuarterColumns,
+            diagram.ActivityNodes,
+            duplicatedEdges);
 
         // Build graph from duplicated diagram
         var duplicatedGraph = _builder.Build(duplicatedDiagram);
